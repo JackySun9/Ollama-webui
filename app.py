@@ -25,7 +25,7 @@ def get_ollama_models():
 # User's specific Ollama models to be used as fallback
 USER_OLLAMA_FALLBACK_MODELS = [
     "devstral:24b", "llama3.3:70b", "llama3.2:latest", "qwen3:32b", 
-    "qwq:32b", "gemma3:27b", "deepseek-r1:14b", "qwen2.5vl:32b"
+    "qwq:32b", "gemma3:27b", "deepseek-r1:14b", "deepseek-r1:8b"
 ]
 
 # Define providers and their models
@@ -205,49 +205,60 @@ def chat_with_model(selected_model_name, user_text, user_image_pil, history_stat
         yield history_for_chatbot_display, history_for_chatbot_display
 
 # --- Gradio UI ---    
-with gr.Blocks(theme=gr.themes.Soft()) as demo:
-    gr.Markdown("# Ollama & LiteLLM Chat Interface with Vision")
+with gr.Blocks(theme=gr.themes.Soft(), title="LiteLLM Chat UI") as demo:
+    gr.Markdown("## 🤖 LiteLLM & Gradio Chat Interface with Vision Support")
     
     state_history = gr.State([])
     # Hidden state to store the fully qualified model name from dropdowns or manual input
     selected_model_for_chat = gr.State(None)
 
     with gr.Row():
-        provider_dropdown = gr.Dropdown(
-            label="Select Provider", 
-            choices=PROVIDER_NAMES, 
-            value=PROVIDER_NAMES[0] if PROVIDER_NAMES else None,
-            scale=1
-        )
-        model_dropdown = gr.Dropdown(
-            label="Select Model", 
-            choices=[], # Will be populated based on provider
-            scale=2,
-            interactive=True
-        )
-        manual_model_textbox = gr.Textbox(
-            label="Manually Enter Full Model String (e.g., openrouter/google/gemini-pro)",
-            placeholder="Overrides dropdowns if filled",
-            scale=2
-        )
-        refresh_ollama_button = gr.Button("🔄 Refresh Ollama Models", scale=1, visible=(PROVIDER_NAMES[0] == "ollama" if PROVIDER_NAMES else False))
+        with gr.Column(scale=1):
+            with gr.Group():
+                gr.Markdown("### Model Selection")
+                provider_dropdown = gr.Dropdown(
+                    label="Select Provider", 
+                    choices=PROVIDER_NAMES, 
+                    value=PROVIDER_NAMES[0] if PROVIDER_NAMES else None,
+                    scale=1
+                )
+                model_dropdown = gr.Dropdown(
+                    label="Select Model", 
+                    choices=[], # Will be populated based on provider
+                    scale=2,
+                    interactive=True
+                )
+                manual_model_textbox = gr.Textbox(
+                    label="Manually Enter Full Model String (e.g., openrouter/google/gemini-pro)",
+                    placeholder="Overrides dropdowns if filled",
+                    scale=2
+                )
+                refresh_ollama_button = gr.Button("🔄 Refresh Ollama Models", scale=1, visible=(PROVIDER_NAMES[0] == "ollama" if PROVIDER_NAMES else False))
 
-    chatbot = gr.Chatbot(label="Chat Conversation", height=450, bubble_full_width=False)
-    
-    with gr.Row():
-        with gr.Column(scale=3):
-            msg_textbox = gr.Textbox(
-                label="Your Message", 
-                placeholder="Type your message or upload an image...", 
-                show_label=False, container=False
-            )
-        with gr.Column(scale=1, min_width=160):
-            image_upload = gr.Image(type="pil", label="Upload Image (Optional)", height=100, show_label=False)
-            # clear_image_button = gr.Button("Clear Image") # Optional clear button
+        with gr.Column(scale=2):
+            gr.Markdown("### Chat Window")
+            chatbot = gr.Chatbot(label="Chat Conversation", height=550, bubble_full_width=False, show_label=False)
+            with gr.Group():
+                with gr.Row():
+                    msg_textbox = gr.Textbox(
+                        label="Your Message", 
+                        placeholder="Type your message or upload an image...", 
+                        show_label=False, 
+                        scale=3,
+                        container=False
+                    )
+                    image_upload = gr.Image(type="pil", label="Upload Image (Optional)", height=80, show_label=False, scale=1)
+                with gr.Row():
+                    clear_chat_button = gr.Button("🗑️ Clear Chat & Image", scale=1)
 
-    with gr.Row():
-        clear_chat_button = gr.Button("Clear Chat & Image")
-        # submit_button = gr.Button("Send Message") # If we want an explicit send button
+    with gr.Accordion("API Key & Usage Notes", open=False):
+        gr.Markdown(
+            "**API Keys:** For providers like OpenAI, OpenRouter, Groq, Anthropic, etc., ensure you have the respective API keys "
+            "set as environment variables (e.g., `OPENAI_API_KEY`, `OPENROUTER_API_KEY`, `GROQ_API_KEY`).\n\n"
+            "**Vision Models:** To use vision capabilities, upload an image along with your text. Ensure the selected model supports vision input.\n\n"
+            "**Manual Model String:** Use the manual input field for models not listed in the dropdowns. Prefix appropriately (e.g., `ollama/llava`, `openrouter/anthropic/claude-3-haiku`).\n\n"
+            "Refer to [LiteLLM Documentation](https://docs.litellm.ai/docs/providers) for more details on providers and model names."
+        )
 
     # --- UI Update Logic ---
     def update_model_dropdown(provider_name):
@@ -349,12 +360,6 @@ with gr.Blocks(theme=gr.themes.Soft()) as demo:
         return gr.Dropdown(choices=models, value=first_model), first_model, gr.Button(visible=refresh_vis)
 
     demo.load(initial_load_models, outputs=[model_dropdown, selected_model_for_chat, refresh_ollama_button])
-
-    gr.Markdown(
-        "**Note:** For vision models, upload an image. For API-based providers (OpenAI, OpenRouter, etc.), "
-        "ensure API keys (`OPENAI_API_KEY`, `OPENROUTER_API_KEY`, etc.) are set as environment variables. "
-        "Refer to [LiteLLM Quick Start](https://docs.litellm.ai/docs/quick_start) for details."
-    )
 
 if __name__ == "__main__":
     logging.info("Starting Gradio application...")

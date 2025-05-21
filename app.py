@@ -25,7 +25,7 @@ def get_ollama_models():
 # User's specific Ollama models to be used as fallback
 USER_OLLAMA_FALLBACK_MODELS = [
     "devstral:24b", "llama3.3:70b", "llama3.2:latest", "qwen3:32b", 
-    "qwq:32b", "gemma3:27b", "deepseek-r1:14b", "deepseek-r1:8b"
+    "qwq:32b", "gemma3:27b", "deepseek-r1:14b", "qwen2.5vl:32b"
 ]
 
 # Define providers and their models

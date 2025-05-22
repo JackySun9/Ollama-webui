@@ -5,6 +5,7 @@ import logging
 import base64
 import io
 from PIL import Image
+import json
 
 # Setup logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -15,11 +16,56 @@ DEFAULT_ALT_TEXT_FOR_IMAGE_ONLY = "(Uploaded Image)" # Constant for default alt 
 def get_ollama_models():
     try:
         models_data = ollama.list().get("models", [])
-        model_names = [m["name"] for m in models_data]
+        model_names = []
+        
+        for m in models_data:
+            # Handle different Ollama API response structures
+            # Some versions use 'name', others might use 'model' or store it directly
+            if isinstance(m, dict):
+                if "name" in m:
+                    model_names.append(m["name"])
+                elif "model" in m:
+                    model_names.append(m["model"])
+                elif hasattr(m, "name") and m.name:
+                    model_names.append(m.name)
+                elif hasattr(m, "model") and m.model:
+                    model_names.append(m.model)
+        
+        if not model_names:
+            # If we still couldn't find models, try alternative API formats
+            try:
+                # Try direct model list (might be used in newer Ollama versions)
+                all_models = ollama.list()
+                if isinstance(all_models, list):
+                    for m in all_models:
+                        if isinstance(m, str):
+                            model_names.append(m)
+                        elif isinstance(m, dict) and "name" in m:
+                            model_names.append(m["name"])
+                        elif isinstance(m, dict) and "model" in m:
+                            model_names.append(m["model"])
+            except Exception as alt_e:
+                logging.warning(f"Alternative Ollama model fetch failed: {alt_e}")
+                
         logging.info(f"Successfully fetched Ollama models: {model_names}")
         return model_names
     except Exception as e:
         logging.error(f"Error fetching Ollama models: {e}", exc_info=True)
+        
+        # Try direct model fetching as fallback
+        try:
+            logging.info("Attempting direct Ollama model fetch")
+            import requests
+            response = requests.get("http://localhost:11434/api/tags")
+            if response.status_code == 200:
+                data = response.json()
+                if "models" in data and isinstance(data["models"], list):
+                    model_names = [m.get("name", m.get("model", "unknown")) for m in data["models"] if isinstance(m, dict)]
+                    logging.info(f"Direct API fetch successful: {model_names}")
+                    return model_names
+        except Exception as fallback_e:
+            logging.error(f"Direct API fallback also failed: {fallback_e}")
+            
         return []
 
 # User's specific Ollama models to be used as fallback
@@ -122,9 +168,13 @@ def image_to_base64(pil_image, format="JPEG"):
     return base64.b64encode(buffered.getvalue()).decode('utf-8')
 
 # --- Chat Logic ---
-def chat_with_model(selected_model_name, user_text, user_image_pil, history_state):
+def chat_with_model(selected_model_name, user_text, user_image_pil, history_state, system_prompt=None, temperature=0.7):
     history_for_chatbot_display = list(history_state)
     messages_for_llm = []
+
+    # Add system prompt if provided
+    if system_prompt and system_prompt.strip():
+        messages_for_llm.append({"role": "system", "content": system_prompt.strip()})
 
     # Reconstruct messages for LiteLLM from history_state
     for user_turn_display_item, bot_turn_text in history_for_chatbot_display:
@@ -175,7 +225,7 @@ def chat_with_model(selected_model_name, user_text, user_image_pil, history_stat
         yield history_for_chatbot_display, history_for_chatbot_display
         return
 
-    logging.info(f"Attempting to stream chat with model: {selected_model_name}")
+    logging.info(f"Attempting to stream chat with model: {selected_model_name}, temperature: {temperature}")
     # logging.debug(f"Messages for LiteLLM: {messages_for_llm}") # Can be very verbose with base64
 
     if user_display_turn_item is not None:
@@ -185,7 +235,12 @@ def chat_with_model(selected_model_name, user_text, user_image_pil, history_stat
         return
         
     try:
-        response_stream = completion(model=selected_model_name, messages=messages_for_llm, stream=True)
+        response_stream = completion(
+            model=selected_model_name, 
+            messages=messages_for_llm, 
+            stream=True,
+            temperature=float(temperature)
+        )
         current_bot_response_text = ""
         for chunk in response_stream:
             delta = chunk.choices[0].delta.content
@@ -204,9 +259,97 @@ def chat_with_model(selected_model_name, user_text, user_image_pil, history_stat
         history_for_chatbot_display[-1] = (user_display_turn_item, error_detail)
         yield history_for_chatbot_display, history_for_chatbot_display
 
+# --- Custom CSS ---
+custom_css = """
+.dark-mode {
+    --background-fill-primary: #1f1f1f !important;
+    --background-fill-secondary: #2b2b2b !important;
+    --text-color: #ffffff !important;
+    --color-accent-soft: #3a3a3a !important;
+    --border-color-primary: #444444 !important;
+}
+
+.light-mode {
+    --background-fill-primary: #ffffff !important;
+    --background-fill-secondary: #f7f7f7 !important;
+    --text-color: #000000 !important;
+    --color-accent-soft: #f0f0f0 !important;
+    --border-color-primary: #ddd !important;
+}
+
+.chat-interface {
+    border-radius: 10px;
+    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+}
+
+.model-selection {
+    border-radius: 10px;
+    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+    padding-bottom: 10px !important;
+}
+
+.input-row {
+    margin-top: 10px !important;
+}
+
+.chat-header {
+    margin-bottom: 10px !important;
+    font-weight: 600 !important;
+}
+
+.system-prompt {
+    border-radius: 8px;
+    padding: 10px;
+    margin-bottom: 10px;
+}
+
+.temperature-slider .gr-slider {
+    margin-top: 5px !important;
+}
+
+.model-info-row {
+    font-size: 0.85em;
+    margin-top: 8px;
+}
+
+.app-title {
+    font-weight: 600 !important;
+    margin-bottom: 20px !important;
+}
+"""
+
 # --- Gradio UI ---    
-with gr.Blocks(theme=gr.themes.Soft(), title="LiteLLM Chat UI") as demo:
-    gr.Markdown("## 🤖 LiteLLM & Gradio Chat Interface with Vision Support")
+with gr.Blocks(theme=gr.themes.Soft(), title="LiteLLM Chat UI", css=custom_css) as demo:
+    dark_mode = gr.State(False)
+    
+    # Create a hidden component to store JavaScript updates
+    js_updates = gr.HTML("", visible=False, elem_id="js-container")
+    
+    def toggle_dark_mode(current_mode):
+        new_mode = not current_mode
+        js_code = ""
+        if new_mode:
+            # Switching to dark mode
+            js_code = """
+                document.querySelector('body').classList.add('dark-mode');
+                document.querySelector('body').classList.remove('light-mode');
+            """
+        else:
+            # Switching to light mode
+            js_code = """
+                document.querySelector('body').classList.add('light-mode');
+                document.querySelector('body').classList.remove('dark-mode');
+            """
+        return new_mode, f"""
+            <script>
+                {js_code}
+            </script>
+        """
+    
+    gr.Markdown("# 🤖 LiteLLM & Gradio Chat Interface", elem_classes=["app-title"])
+    
+    with gr.Row():
+        theme_btn = gr.Button("🌓 Toggle Dark Mode", scale=1, variant="secondary")
     
     state_history = gr.State([])
     # Hidden state to store the fully qualified model name from dropdowns or manual input
@@ -214,42 +357,87 @@ with gr.Blocks(theme=gr.themes.Soft(), title="LiteLLM Chat UI") as demo:
 
     with gr.Row():
         with gr.Column(scale=1):
-            with gr.Group():
-                gr.Markdown("### Model Selection")
+            with gr.Group(elem_classes=["model-selection"]):
+                gr.Markdown("### Model Selection", elem_classes=["chat-header"])
+                
                 provider_dropdown = gr.Dropdown(
-                    label="Select Provider", 
+                    label="Provider", 
                     choices=PROVIDER_NAMES, 
                     value=PROVIDER_NAMES[0] if PROVIDER_NAMES else None,
                     scale=1
                 )
                 model_dropdown = gr.Dropdown(
-                    label="Select Model", 
+                    label="Model", 
                     choices=[], # Will be populated based on provider
-                    scale=2,
+                    scale=1,
                     interactive=True
                 )
                 manual_model_textbox = gr.Textbox(
-                    label="Manually Enter Full Model String (e.g., openrouter/google/gemini-pro)",
-                    placeholder="Overrides dropdowns if filled",
-                    scale=2
+                    label="Manual Model String",
+                    placeholder="e.g., openrouter/google/gemini-pro",
+                    scale=1
                 )
-                refresh_ollama_button = gr.Button("🔄 Refresh Ollama Models", scale=1, visible=(PROVIDER_NAMES[0] == "ollama" if PROVIDER_NAMES else False))
+                refresh_ollama_button = gr.Button("🔄 Refresh Ollama Models", scale=1, variant="secondary", visible=(PROVIDER_NAMES[0] == "ollama" if PROVIDER_NAMES else False))
+                
+                with gr.Accordion("Generation Settings", open=True):
+                    system_prompt = gr.Textbox(
+                        label="System Prompt",
+                        placeholder="Instructions for the AI...",
+                        lines=2,
+                        elem_classes=["system-prompt"]
+                    )
+                    temperature = gr.Slider(
+                        label="Temperature",
+                        minimum=0.0,
+                        maximum=2.0,
+                        value=0.7,
+                        step=0.1,
+                        elem_classes=["temperature-slider"]
+                    )
 
         with gr.Column(scale=2):
-            gr.Markdown("### Chat Window")
-            chatbot = gr.Chatbot(label="Chat Conversation", height=550, bubble_full_width=False, show_label=False)
-            with gr.Group():
-                with gr.Row():
-                    msg_textbox = gr.Textbox(
-                        label="Your Message", 
-                        placeholder="Type your message or upload an image...", 
-                        show_label=False, 
-                        scale=3,
-                        container=False
+            with gr.Group(elem_classes=["chat-interface"]):
+                gr.Markdown("### Chat Window", elem_classes=["chat-header"])
+                
+                # Chat display
+                chatbot = gr.Chatbot(
+                    label="Chat Conversation", 
+                    height=550, 
+                    bubble_full_width=False, 
+                    show_label=False,
+                    avatar_images=("👤", "🤖")
+                )
+                
+                # Input area
+                with gr.Group():
+                    with gr.Row(elem_classes=["input-row"]):
+                        msg_textbox = gr.Textbox(
+                            label="Your Message", 
+                            placeholder="Type your message here...", 
+                            show_label=False, 
+                            scale=3,
+                            container=False
+                        )
+                        image_upload = gr.Image(
+                            type="pil", 
+                            label="Image", 
+                            height=80, 
+                            show_label=False, 
+                            scale=1,
+                            sources=["upload", "clipboard"]
+                        )
+                    
+                    with gr.Row():
+                        clear_chat_button = gr.Button("🗑️ Clear Chat", scale=1, variant="secondary")
+                        send_button = gr.Button("📤 Send", scale=1, variant="primary")
+
+                # Model info footer
+                with gr.Row(elem_classes=["model-info-row"]):
+                    gr.Markdown(
+                        "📊 **Current Model:** <span id='current-model'>None selected</span> | "
+                        "🔥 **Temperature:** <span id='current-temp'>0.7</span>",
+                        elem_id="model-info-display"
                     )
-                    image_upload = gr.Image(type="pil", label="Upload Image (Optional)", height=80, show_label=False, scale=1)
-                with gr.Row():
-                    clear_chat_button = gr.Button("🗑️ Clear Chat & Image", scale=1)
 
     with gr.Accordion("API Key & Usage Notes", open=False):
         gr.Markdown(
@@ -306,10 +494,10 @@ with gr.Blocks(theme=gr.themes.Soft(), title="LiteLLM Chat UI") as demo:
     )
 
     # --- Submission Logic ---
-    def wrapped_handle_submit(manual_model_str, text_msg, image_pil, chat_hist_state, current_selected_model_state):
+    def wrapped_handle_submit(manual_model_str, text_msg, image_pil, chat_hist_state, current_selected_model_state, sys_prompt, temp):
         if not text_msg.strip() and image_pil is None:
             # Yield current state to avoid clearing chat for empty submit
-            yield chat_hist_state, chat_hist_state, text_msg, image_pil # No change to textbox/image
+            yield chat_hist_state, chat_hist_state, text_msg, image_pil, ""  # No change to textbox/image, empty JS
             return
         
         final_model_to_use = manual_model_str.strip() if manual_model_str and manual_model_str.strip() else current_selected_model_state
@@ -317,38 +505,77 @@ with gr.Blocks(theme=gr.themes.Soft(), title="LiteLLM Chat UI") as demo:
         initial_state = list(chat_hist_state)
         final_chatbot_val, final_state_val = None, None
         
+        # Create JavaScript to update UI display of current model and temperature
+        js_code = f"""
+        <script>
+            (function() {{
+                if (document.getElementById('current-model')) {{
+                    document.getElementById('current-model').textContent = "{final_model_to_use if final_model_to_use else 'None'}";
+                }}
+                if (document.getElementById('current-temp')) {{
+                    document.getElementById('current-temp').textContent = "{temp}";
+                }}
+            }})();
+        </script>
+        """
+        
         # The generator yields (chatbot_display_history, new_state_history)
-        for chatbot_val, state_val in chat_with_model(final_model_to_use, text_msg, image_pil, initial_state):
+        for chatbot_val, state_val in chat_with_model(final_model_to_use, text_msg, image_pil, initial_state, sys_prompt, temp):
             final_chatbot_val = chatbot_val
             final_state_val = state_val
             # Keep text and image in place during streaming
-            yield chatbot_val, state_val, text_msg, image_pil 
+            yield chatbot_val, state_val, text_msg, image_pil, js_code
         
         # After streaming is done, clear the text and image inputs
-        yield final_chatbot_val, final_state_val, "", None
+        yield final_chatbot_val, final_state_val, "", None, js_code
 
-    # Inputs for submit: manual model, text, image, history state, selected model from dropdowns
+    # Inputs for submit: manual model, text, image, history state, selected model from dropdowns, system prompt, temperature
     submit_inputs = [
         manual_model_textbox, msg_textbox, image_upload, 
-        state_history, selected_model_for_chat
+        state_history, selected_model_for_chat, system_prompt, temperature
     ]
-    # Outputs for submit: chatbot, history state, text input, image input
-    submit_outputs = [chatbot, state_history, msg_textbox, image_upload]
+    # Outputs for submit: chatbot, history state, text input, image input, js_updates
+    submit_outputs = [chatbot, state_history, msg_textbox, image_upload, js_updates]
 
     msg_textbox.submit(fn=wrapped_handle_submit, inputs=submit_inputs, outputs=submit_outputs)
-    # If using a submit_button:
-    # submit_button.click(fn=wrapped_handle_submit, inputs=submit_inputs, outputs=submit_outputs)
+    send_button.click(fn=wrapped_handle_submit, inputs=submit_inputs, outputs=submit_outputs)
 
     def clear_chat_and_image_func():
         logging.info("Chat and image cleared by user.")
-        return [], [], "", None, None # Chatbot, state, msg_textbox, image_upload, selected_model_for_chat
+        js_code = """
+        <script>
+            (function() {
+                if (document.getElementById('current-model')) {
+                    document.getElementById('current-model').textContent = "None selected";
+                }
+            })();
+        </script>
+        """
+        return [], [], "", None, None, js_code # Chatbot, state, msg_textbox, image_upload, selected_model_for_chat, js_updates
 
     clear_chat_button.click(clear_chat_and_image_func, None, 
-                            [chatbot, state_history, msg_textbox, image_upload, selected_model_for_chat], 
+                            [chatbot, state_history, msg_textbox, image_upload, selected_model_for_chat, js_updates], 
                             queue=False)
     
+    # Handle dark mode toggle
+    theme_btn.click(
+        fn=toggle_dark_mode,
+        inputs=[dark_mode],
+        outputs=[dark_mode, js_updates]
+    )
+    
+    # Initialize theme to match initial state
+    demo.load(
+        fn=lambda: """
+        <script>
+            document.querySelector('body').classList.add('light-mode');
+        </script>
+        """,
+        inputs=None,
+        outputs=js_updates,
+    )
+    
     # Initialize model dropdown for the default provider
-    # This needs to happen after the UI components are defined
     def initial_load_models():
         default_provider = PROVIDER_NAMES[0] if PROVIDER_NAMES else None
         models, first_model, refresh_vis = [], None, False

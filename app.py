@@ -6,6 +6,7 @@ import base64
 import io
 from PIL import Image
 import json
+import re  # Add this at the top if not already present
 
 # Setup logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -71,7 +72,7 @@ def get_ollama_models():
 # User's specific Ollama models to be used as fallback
 USER_OLLAMA_FALLBACK_MODELS = [
     "devstral:24b", "llama3.3:70b", "llama3.2:latest", "qwen3:32b", 
-    "qwq:32b", "gemma3:27b", "deepseek-r1:14b", "deepseek-r1:8b"
+    "qwq:32b", "gemma3:27b", "deepseek-r1:14b", "qwen2.5vl:32b"
 ]
 
 # Define providers and their models
@@ -117,6 +118,14 @@ PREDEFINED_PROVIDERS = {
 }
 
 PROVIDER_NAMES = list(PREDEFINED_PROVIDERS.keys())
+
+# Models that should display their thinking process
+THINKING_MODELS = [
+    "deepseek-r1:14b", "deepseek-r1:8b",  # Deepseek models often have thinking tags
+    "think",  # Any model with "think" in the name
+    "reasoning",  # Any model with "reasoning" in the name
+    "cot"  # Chain of thought models
+]
 
 def get_models_for_provider(provider_name):
     if provider_name not in PREDEFINED_PROVIDERS:
@@ -166,6 +175,62 @@ def image_to_base64(pil_image, format="JPEG"):
     buffered = io.BytesIO()
     pil_image.save(buffered, format=format)
     return base64.b64encode(buffered.getvalue()).decode('utf-8')
+
+# Add this helper function
+def clean_model_response(text, model_name=None):
+    """
+    Remove or preserve thinking tags and other content from model responses
+    depending on the model type.
+    
+    Args:
+        text: The text to clean
+        model_name: Name of the model, to check if it's a thinking model
+    
+    Returns:
+        Cleaned text with thinking tags preserved or removed as appropriate
+    """
+    if not text:
+        return ""
+    
+    # Check if this is a "thinking model" that should display its reasoning
+    is_thinking_model = False
+    if model_name:
+        # Extract base model name from fully qualified name (e.g., "ollama/deepseek-r1:14b" -> "deepseek-r1:14b")
+        base_model = model_name.split('/')[-1] if '/' in model_name else model_name
+        
+        # Check if this model is in our thinking models list or contains keywords
+        is_thinking_model = any(thinking_model in base_model.lower() 
+                               for thinking_model in THINKING_MODELS) or \
+                           any(keyword in base_model.lower() 
+                               for keyword in ["think", "reasoning", "cot"])
+    
+    if is_thinking_model:
+        # For thinking models, preserve the tags but format them nicely
+        cleaned = text
+        
+        # Optional: Format <think> sections to look better
+        cleaned = re.sub(r'<think>', '\n\n💭 *Thinking:*\n', cleaned)
+        cleaned = re.sub(r'</think>', '\n\n', cleaned)
+        
+        # Format other tags but preserve content
+        cleaned = re.sub(r'<reasoning>', '\n\n💡 *Reasoning:*\n', cleaned)
+        cleaned = re.sub(r'</reasoning>', '\n\n', cleaned)
+        cleaned = re.sub(r'<answer>', '\n\n✅ *Answer:*\n', cleaned)
+        cleaned = re.sub(r'</answer>', '', cleaned)
+    else:
+        # For regular models, remove thinking sections entirely
+        cleaned = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL)
+        cleaned = re.sub(r'<answer>|</answer>', '', cleaned)
+        cleaned = re.sub(r'<reasoning>.*?</reasoning>', '', cleaned, flags=re.DOTALL)
+    
+    # Common cleaning for all models
+    # Replace multiple newlines with just two
+    cleaned = re.sub(r'\n{3,}', '\n\n', cleaned)
+    
+    # Trim leading/trailing whitespace
+    cleaned = cleaned.strip()
+    
+    return cleaned
 
 # --- Chat Logic ---
 def chat_with_model(selected_model_name, user_text, user_image_pil, history_state, system_prompt=None, temperature=0.7):
@@ -226,7 +291,25 @@ def chat_with_model(selected_model_name, user_text, user_image_pil, history_stat
         return
 
     logging.info(f"Attempting to stream chat with model: {selected_model_name}, temperature: {temperature}")
-    # logging.debug(f"Messages for LiteLLM: {messages_for_llm}") # Can be very verbose with base64
+    
+    # Print the first few messages for debugging (excluding large base64 images)
+    debug_messages = []
+    for msg in messages_for_llm:
+        if msg["role"] == "user" and isinstance(msg["content"], list):
+            # For multipart messages, show only text parts or indicate image presence
+            content_debug = []
+            for part in msg["content"]:
+                if part.get("type") == "text":
+                    content_debug.append({"type": "text", "text": part["text"]})
+                elif part.get("type") == "image_url":
+                    content_debug.append({"type": "image_url", "note": "[IMAGE DATA]"})
+            debug_msg = {"role": msg["role"], "content": content_debug}
+        else:
+            # For simple text messages, include directly
+            debug_msg = msg
+        debug_messages.append(debug_msg)
+    
+    logging.info(f"Messages for LiteLLM (debug view): {json.dumps(debug_messages, indent=2)}")
 
     if user_display_turn_item is not None:
         history_for_chatbot_display.append((user_display_turn_item, "")) # Placeholder for bot response
@@ -235,24 +318,138 @@ def chat_with_model(selected_model_name, user_text, user_image_pil, history_stat
         return
         
     try:
-        response_stream = completion(
-            model=selected_model_name, 
-            messages=messages_for_llm, 
-            stream=True,
-            temperature=float(temperature)
-        )
-        current_bot_response_text = ""
-        for chunk in response_stream:
-            delta = chunk.choices[0].delta.content
-            if delta:
-                current_bot_response_text += delta
-                history_for_chatbot_display[-1] = (user_display_turn_item, current_bot_response_text)
-                yield history_for_chatbot_display, history_for_chatbot_display
-        logging.info(f"Successfully streamed response from {selected_model_name}")
+        # Attempt with streaming first
+        streaming_enabled = True
+        try:
+            logging.info(f"Starting streaming request to {selected_model_name}")
+            response_stream = completion(
+                model=selected_model_name, 
+                messages=messages_for_llm, 
+                stream=True,
+                temperature=float(temperature)
+            )
+            
+            current_bot_response_text = ""
+            chunks_received = 0
+            empty_chunks = 0
+            
+            for chunk in response_stream:
+                chunks_received += 1
+                delta = None
+                
+                # Handle different response formats
+                if hasattr(chunk, 'choices') and chunk.choices:
+                    if hasattr(chunk.choices[0], 'delta'):
+                        if hasattr(chunk.choices[0].delta, 'content'):
+                            # Standard OpenAI-like format
+                            delta = chunk.choices[0].delta.content
+                        elif hasattr(chunk.choices[0].delta, 'text'):
+                            # Alternative format seen in some models
+                            delta = chunk.choices[0].delta.text
+                    elif hasattr(chunk.choices[0], 'text'):
+                        # Direct text format
+                        delta = chunk.choices[0].text
+                    elif hasattr(chunk.choices[0], 'message') and hasattr(chunk.choices[0].message, 'content'):
+                        # Complete message format
+                        delta = chunk.choices[0].message.content
+                
+                if delta:
+                    logging.debug(f"Received chunk {chunks_received}: '{delta}'")
+                    current_bot_response_text += delta
+                    
+                    # Clean the current accumulated text before displaying, passing model name
+                    cleaned_text = clean_model_response(current_bot_response_text, selected_model_name)
+                    
+                    # Only update the UI if there's clean content to show
+                    if cleaned_text:
+                        history_for_chatbot_display[-1] = (user_display_turn_item, cleaned_text)
+                        yield history_for_chatbot_display, history_for_chatbot_display
+                else:
+                    empty_chunks += 1
+                    logging.debug(f"Received empty chunk {chunks_received}")
+            
+            # Clean the final response with model name
+            final_cleaned_text = clean_model_response(current_bot_response_text, selected_model_name)
+            
+            # If we got chunks but text is still empty, use non-streaming as fallback
+            if chunks_received > 0 and not final_cleaned_text.strip():
+                logging.warning(f"Received {chunks_received} chunks but no clean text content from {selected_model_name}")
+                logging.warning(f"Raw text before cleaning: '{current_bot_response_text[:100]}...'")
+                logging.warning(f"Empty chunks: {empty_chunks}, Non-empty chunks: {chunks_received - empty_chunks}")
+                logging.warning("Will try non-streaming mode as fallback")
+                streaming_enabled = False
+            elif chunks_received == 0:
+                # No chunks received despite no errors - fall back to non-streaming
+                logging.warning(f"No chunks received from {selected_model_name} in streaming mode. Falling back to non-streaming.")
+                streaming_enabled = False
+            else:
+                logging.info(f"Successfully streamed response from {selected_model_name} ({chunks_received} chunks, {empty_chunks} empty)")
+                
+                # Ensure the final cleaned response is in the UI
+                if final_cleaned_text.strip():
+                    logging.info(f"Final cleaned response text: '{final_cleaned_text[:100]}...'")
+                    history_for_chatbot_display[-1] = (user_display_turn_item, final_cleaned_text)
+                    yield history_for_chatbot_display, history_for_chatbot_display
+                    # If we successfully got a response, return
+                    return
+                else:
+                    # If we got through streaming but cleaned text is empty, try non-streaming
+                    logging.warning("Cleaned streamed response is empty, trying non-streaming mode")
+                    streaming_enabled = False
+                 
+        except Exception as stream_err:
+            logging.warning(f"Error in streaming mode with {selected_model_name}: {stream_err}. Falling back to non-streaming.")
+            streaming_enabled = False
+        
+        # If streaming failed or produced no chunks, try non-streaming mode
+        if not streaming_enabled:
+            logging.info(f"Attempting non-streaming completion with {selected_model_name}")
+            response = completion(
+                model=selected_model_name, 
+                messages=messages_for_llm, 
+                stream=False,
+                temperature=float(temperature)
+            )
+            
+            logging.info(f"Non-streaming response type: {type(response)}")
+            if hasattr(response, '__dict__'):
+                logging.info(f"Response attributes: {dir(response)}")
+            
+            response_text = None
+            
+            # Try different response formats
+            if response:
+                if hasattr(response, 'choices') and response.choices:
+                    if hasattr(response.choices[0], 'message'):
+                        response_text = response.choices[0].message.content
+                    elif hasattr(response.choices[0], 'text'):
+                        response_text = response.choices[0].text
+                elif hasattr(response, 'content'):
+                    response_text = response.content
+                elif hasattr(response, 'text'):
+                    response_text = response.text
+            
+            if response_text:
+                # Clean the response text with model name
+                cleaned_response = clean_model_response(response_text, selected_model_name)
+                logging.info(f"Successfully received non-streaming response: '{cleaned_response[:100]}...'")
+                
+                if cleaned_response.strip():
+                    history_for_chatbot_display[-1] = (user_display_turn_item, cleaned_response)
+                    yield history_for_chatbot_display, history_for_chatbot_display
+                    return
+                else:
+                    logging.error(f"Non-streaming response produced empty text after cleaning. Raw: '{response_text[:100]}...'")
+                    raise Exception("Model returned content that was filtered out entirely")
+            else:
+                logging.error(f"No text content found in non-streaming response")
+                raise Exception("Model returned no valid response content in non-streaming mode")
+            
     except Exception as e:
-        logging.error(f"Error during model streaming with {selected_model_name}: {e}", exc_info=True)
+        logging.error(f"Error during model interaction with {selected_model_name}: {e}", exc_info=True)
         error_detail = f"Error interacting with model {selected_model_name}: {str(e)}\n\nCommon issues:\n"
         error_detail += "- Ensure the model name is correct (e.g., 'ollama/mistral', 'openrouter/openai/gpt-4o').\n"
+        error_detail += "- For Ollama models, make sure you've downloaded the model with 'ollama pull MODEL_NAME'.\n"
         error_detail += "- For API-based models, ensure API keys (e.g., OPENAI_API_KEY, OPENROUTER_API_KEY) are set as environment variables.\n"
         error_detail += "- Check if the model server (e.g., Ollama for local models) is running and accessible.\n"
         error_detail += "- The model might be overloaded or unavailable, or not support the input type (e.g. vision for text-only model)."

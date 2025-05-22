@@ -456,7 +456,181 @@ def chat_with_model(selected_model_name, user_text, user_image_pil, history_stat
         history_for_chatbot_display[-1] = (user_display_turn_item, error_detail)
         yield history_for_chatbot_display, history_for_chatbot_display
 
-# --- Custom CSS ---
+# --- JavaScript for Features ---
+ui_enhancement_js = """
+function setupChatEnhancements() {
+    console.log("Setting up chat enhancements...");
+    
+    // Function to auto-scroll chat to bottom
+    function autoScrollChat() {
+        const chatContainer = document.querySelector('.chatbot');
+        if (chatContainer) {
+            chatContainer.scrollTop = chatContainer.scrollHeight;
+        }
+    }
+
+    // Function to add copy buttons to messages
+    function addCopyButtons() {
+        document.querySelectorAll('.chatbot .message').forEach(msg => {
+            // Check if this message already has a copy button
+            if (!msg.querySelector('.copy-button')) {
+                // Create and append copy button
+                const btn = document.createElement('button');
+                btn.className = 'copy-button';
+                btn.innerHTML = 'Copy';
+                btn.onclick = function(e) {
+                    e.stopPropagation();
+                    const text = msg.querySelector('.message-text') ? 
+                                 msg.querySelector('.message-text').innerText : 
+                                 msg.innerText;
+                    navigator.clipboard.writeText(text).then(() => {
+                        btn.innerHTML = 'Copied!';
+                        setTimeout(() => { btn.innerHTML = 'Copy'; }, 2000);
+                    });
+                };
+                msg.style.position = 'relative';
+                msg.appendChild(btn);
+            }
+        });
+    }
+
+    // Function to add timestamps to messages
+    function addTimestamps() {
+        document.querySelectorAll('.chatbot .message').forEach(msg => {
+            // Check if this message already has a timestamp
+            if (!msg.querySelector('.message-timestamp')) {
+                // Create and append timestamp
+                const timestamp = document.createElement('div');
+                timestamp.className = 'message-timestamp';
+                timestamp.innerText = new Date().toLocaleTimeString();
+                msg.appendChild(timestamp);
+            }
+        });
+    }
+    
+    // Apply enhancements immediately
+    autoScrollChat();
+    addCopyButtons();
+    addTimestamps();
+    
+    // Set up mutation observer to watch for changes in chat
+    const observer = new MutationObserver(() => {
+        console.log("Chat content changed!");
+        autoScrollChat();
+        addCopyButtons();
+        addTimestamps();
+    });
+    
+    // Start observing
+    const chatContainer = document.querySelector('.chatbot');
+    if (chatContainer) {
+        observer.observe(chatContainer, { childList: true, subtree: true });
+        console.log("Observer attached to chat container");
+    } else {
+        console.log("Chat container not found!");
+    }
+    
+    // Auto-scroll on window resize (helps with mobile)
+    window.addEventListener('resize', autoScrollChat);
+    
+    return true;
+}
+
+// Add styles directly to the document
+function addCustomStyles() {
+    const styleElement = document.createElement('style');
+    styleElement.textContent = `
+        /* Timestamp styling */
+        .message-timestamp {
+            font-size: 0.7em;
+            opacity: 0.7;
+            margin-top: 2px;
+        }
+        
+        /* Typing indicator */
+        .typing-indicator {
+            display: inline-block;
+            padding: 6px 12px;
+            background-color: var(--color-accent-soft, #f0f0f0);
+            border-radius: 12px;
+            margin: 5px 0;
+        }
+        .typing-indicator span {
+            display: inline-block;
+            width: 8px;
+            height: 8px;
+            background-color: rgba(128, 128, 128, 0.7);
+            border-radius: 50%;
+            margin-right: 3px;
+            animation: typingBounce 1.2s infinite ease-in-out;
+        }
+        .typing-indicator span:nth-child(2) {
+            animation-delay: 0.2s;
+        }
+        .typing-indicator span:nth-child(3) {
+            animation-delay: 0.4s;
+            margin-right: 0;
+        }
+        @keyframes typingBounce {
+            0%, 100% { transform: translateY(0); }
+            50% { transform: translateY(-4px); }
+        }
+        
+        /* Copy button for messages */
+        .copy-button {
+            opacity: 0;
+            transition: opacity 0.3s;
+            position: absolute;
+            top: 5px;
+            right: 5px;
+            padding: 4px 8px;
+            background: var(--background-fill-secondary, #f7f7f7);
+            border: 1px solid var(--border-color-primary, #ddd);
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 12px;
+        }
+        .chatbot .message:hover .copy-button {
+            opacity: 1;
+        }
+    `;
+    document.head.appendChild(styleElement);
+    return true;
+}
+
+// Initialize on page load and after Gradio updates
+function initializeEnhancements() {
+    // First add the styles
+    addCustomStyles();
+    
+    // Check if Gradio has fully loaded
+    if (document.readyState === 'complete') {
+        setupChatEnhancements();
+    } else {
+        // Try immediately anyway, then after a delay
+        setTimeout(setupChatEnhancements, 100);
+        setTimeout(setupChatEnhancements, 500);
+        setTimeout(setupChatEnhancements, 1000);
+        setTimeout(setupChatEnhancements, 2000);
+    }
+    
+    // Also run when Gradio updates its DOM
+    const gradioContainer = document.querySelector('#component-0');
+    if (gradioContainer) {
+        const gradioObserver = new MutationObserver(() => {
+            setTimeout(setupChatEnhancements, 100);
+        });
+        gradioObserver.observe(gradioContainer, { childList: true, subtree: true });
+    }
+    
+    return true;
+}
+
+// Start initializing
+initializeEnhancements();
+"""
+
+# CSS for basic UI elements - still needed
 custom_css = """
 .dark-mode {
     --background-fill-primary: #1f1f1f !important;
@@ -522,6 +696,9 @@ with gr.Blocks(theme=gr.themes.Soft(), title="LiteLLM Chat UI", css=custom_css) 
     # Create a hidden component to store JavaScript updates
     js_updates = gr.HTML("", visible=False, elem_id="js-container")
     
+    # Add a dedicated script component for UI enhancements
+    ui_script = gr.HTML(f"<script>{ui_enhancement_js}</script>", visible=False)
+    
     def toggle_dark_mode(current_mode):
         new_mode = not current_mode
         js_code = ""
@@ -540,6 +717,8 @@ with gr.Blocks(theme=gr.themes.Soft(), title="LiteLLM Chat UI", css=custom_css) 
         return new_mode, f"""
             <script>
                 {js_code}
+                // Reapply enhancements after theme change
+                setTimeout(setupChatEnhancements, 100);
             </script>
         """
     
@@ -551,6 +730,8 @@ with gr.Blocks(theme=gr.themes.Soft(), title="LiteLLM Chat UI", css=custom_css) 
     state_history = gr.State([])
     # Hidden state to store the fully qualified model name from dropdowns or manual input
     selected_model_for_chat = gr.State(None)
+    # State to track if a response is being generated
+    is_generating = gr.State(False)
 
     with gr.Row():
         with gr.Column(scale=1):
@@ -602,7 +783,19 @@ with gr.Blocks(theme=gr.themes.Soft(), title="LiteLLM Chat UI", css=custom_css) 
                     height=550, 
                     bubble_full_width=False, 
                     show_label=False,
-                    avatar_images=("👤", "🤖")
+                    avatar_images=("👤", "🤖"),
+                    elem_id="chat-window"
+                )
+                
+                # Typing indicator element
+                typing_indicator = gr.HTML(
+                    """
+                    <div class="typing-indicator" style="display: none;">
+                        <span></span><span></span><span></span>
+                    </div>
+                    """, 
+                    visible=True,
+                    elem_id="typing-indicator"
                 )
                 
                 # Input area
@@ -691,11 +884,19 @@ with gr.Blocks(theme=gr.themes.Soft(), title="LiteLLM Chat UI", css=custom_css) 
     )
 
     # --- Submission Logic ---
-    def wrapped_handle_submit(manual_model_str, text_msg, image_pil, chat_hist_state, current_selected_model_state, sys_prompt, temp):
+    def wrapped_handle_submit(manual_model_str, text_msg, image_pil, chat_hist_state, current_selected_model_state, sys_prompt, temp, is_generating_state):
+        if is_generating_state:
+            # If already generating, don't allow a new submission
+            yield chat_hist_state, chat_hist_state, text_msg, image_pil, "", True
+            return
+            
         if not text_msg.strip() and image_pil is None:
             # Yield current state to avoid clearing chat for empty submit
-            yield chat_hist_state, chat_hist_state, text_msg, image_pil, ""  # No change to textbox/image, empty JS
+            yield chat_hist_state, chat_hist_state, text_msg, image_pil, "", False
             return
+        
+        # Set generating state to true
+        is_generating_state = True
         
         final_model_to_use = manual_model_str.strip() if manual_model_str and manual_model_str.strip() else current_selected_model_state
         
@@ -703,6 +904,7 @@ with gr.Blocks(theme=gr.themes.Soft(), title="LiteLLM Chat UI", css=custom_css) 
         final_chatbot_val, final_state_val = None, None
         
         # Create JavaScript to update UI display of current model and temperature
+        # and show typing indicator
         js_code = f"""
         <script>
             (function() {{
@@ -711,6 +913,25 @@ with gr.Blocks(theme=gr.themes.Soft(), title="LiteLLM Chat UI", css=custom_css) 
                 }}
                 if (document.getElementById('current-temp')) {{
                     document.getElementById('current-temp').textContent = "{temp}";
+                }}
+                
+                // Show typing indicator
+                const indicator = document.querySelector('.typing-indicator');
+                if (indicator) {{
+                    indicator.style.display = 'inline-block';
+                }}
+                
+                // Force a scroll to bottom
+                setTimeout(() => {{
+                    const chatContainer = document.querySelector('.chatbot');
+                    if (chatContainer) {{
+                        chatContainer.scrollTop = chatContainer.scrollHeight;
+                    }}
+                }}, 100);
+                
+                // Call our enhancement functions
+                if (typeof setupChatEnhancements === 'function') {{
+                    setupChatEnhancements();
                 }}
             }})();
         </script>
@@ -721,18 +942,45 @@ with gr.Blocks(theme=gr.themes.Soft(), title="LiteLLM Chat UI", css=custom_css) 
             final_chatbot_val = chatbot_val
             final_state_val = state_val
             # Keep text and image in place during streaming
-            yield chatbot_val, state_val, text_msg, image_pil, js_code
+            yield chatbot_val, state_val, text_msg, image_pil, js_code, True
+        
+        # Hide typing indicator when done
+        js_code_final = f"""
+        <script>
+            (function() {{
+                if (document.getElementById('current-model')) {{
+                    document.getElementById('current-model').textContent = "{final_model_to_use if final_model_to_use else 'None'}";
+                }}
+                if (document.getElementById('current-temp')) {{
+                    document.getElementById('current-temp').textContent = "{temp}";
+                }}
+                
+                // Hide typing indicator
+                const indicator = document.querySelector('.typing-indicator');
+                if (indicator) {{
+                    indicator.style.display = 'none';
+                }}
+                
+                // Force a scroll to bottom and refresh enhancements
+                setTimeout(() => {{
+                    if (typeof setupChatEnhancements === 'function') {{
+                        setupChatEnhancements();
+                    }}
+                }}, 100);
+            }})();
+        </script>
+        """
         
         # After streaming is done, clear the text and image inputs
-        yield final_chatbot_val, final_state_val, "", None, js_code
+        yield final_chatbot_val, final_state_val, "", None, js_code_final, False
 
-    # Inputs for submit: manual model, text, image, history state, selected model from dropdowns, system prompt, temperature
+    # Inputs for submit: manual model, text, image, history state, selected model from dropdowns, system prompt, temperature, is_generating
     submit_inputs = [
         manual_model_textbox, msg_textbox, image_upload, 
-        state_history, selected_model_for_chat, system_prompt, temperature
+        state_history, selected_model_for_chat, system_prompt, temperature, is_generating
     ]
-    # Outputs for submit: chatbot, history state, text input, image input, js_updates
-    submit_outputs = [chatbot, state_history, msg_textbox, image_upload, js_updates]
+    # Outputs for submit: chatbot, history state, text input, image input, js_updates, is_generating
+    submit_outputs = [chatbot, state_history, msg_textbox, image_upload, js_updates, is_generating]
 
     msg_textbox.submit(fn=wrapped_handle_submit, inputs=submit_inputs, outputs=submit_outputs)
     send_button.click(fn=wrapped_handle_submit, inputs=submit_inputs, outputs=submit_outputs)
@@ -745,13 +993,26 @@ with gr.Blocks(theme=gr.themes.Soft(), title="LiteLLM Chat UI", css=custom_css) 
                 if (document.getElementById('current-model')) {
                     document.getElementById('current-model').textContent = "None selected";
                 }
+                
+                // Hide typing indicator
+                const indicator = document.querySelector('.typing-indicator');
+                if (indicator) {
+                    indicator.style.display = 'none';
+                }
+                
+                // Clear chat UI
+                setTimeout(() => {
+                    if (typeof setupChatEnhancements === 'function') {
+                        setupChatEnhancements();
+                    }
+                }, 100);
             })();
         </script>
         """
-        return [], [], "", None, None, js_code # Chatbot, state, msg_textbox, image_upload, selected_model_for_chat, js_updates
+        return [], [], "", None, None, False, js_code # Chatbot, state, msg_textbox, image_upload, selected_model_for_chat, is_generating, js_updates
 
     clear_chat_button.click(clear_chat_and_image_func, None, 
-                            [chatbot, state_history, msg_textbox, image_upload, selected_model_for_chat, js_updates], 
+                            [chatbot, state_history, msg_textbox, image_upload, selected_model_for_chat, is_generating, js_updates], 
                             queue=False)
     
     # Handle dark mode toggle
@@ -763,9 +1024,10 @@ with gr.Blocks(theme=gr.themes.Soft(), title="LiteLLM Chat UI", css=custom_css) 
     
     # Initialize theme to match initial state
     demo.load(
-        fn=lambda: """
+        fn=lambda: f"""
         <script>
             document.querySelector('body').classList.add('light-mode');
+            // Setup enhancements will be handled by the dedicated script component
         </script>
         """,
         inputs=None,
